@@ -21,16 +21,6 @@ const (
 	userAgent  = "go-pananames"
 )
 
-// Custom type for DateTime data, inherits time.Time
-// Needs to avoid JSON unmarshall error when DateTime in JSON returns as empty string ""
-type PnTime struct {
-	time.Time
-}
-
-type PnDate struct {
-	time.Time
-}
-
 // Represents api client
 type Client struct {
 	httpClient *http.Client
@@ -80,28 +70,6 @@ type Option func(*Client) error
 
 // Represents option func to customize API request
 type RequestOptionFunc func(*http.Request) error
-
-// Custom Unmarshall for PnTime
-func (t *PnTime) UnmarshalJSON(data []byte) error {
-	if string(data) == `""` {
-		return nil
-	}
-	return t.Time.UnmarshalJSON(data)
-}
-
-func (d *PnDate) UnmarshalJSON(data []byte) error {
-	val := strings.Trim(string(data), `"`)
-	if val == "" {
-		return nil
-	}
-
-	var err error
-	if d.Time, err = time.Parse("2006-01-02", val); err != nil {
-		return err
-	}
-
-	return nil
-}
 
 func (e *ErrorResponse) Error() string {
 	path, _ := url.QueryUnescape(e.Response.Request.URL.Path)
@@ -200,28 +168,28 @@ func NewClient(token string, opts ...Option) (*Client, error) {
 }
 
 // Make an http request, check and parse response
-func (c *Client) Do(req *http.Request, v interface{}) (*Response, error) {
+func (c *Client) Do(req *http.Request, v any) (*Response, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	if err := CheckResponse(resp); err != nil {
+	if err = CheckResponse(resp); err != nil {
 		return nil, err
 	}
 
 	// Parse data field from response
 	if v != nil {
 		result := &Response{}
-		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		if err = json.NewDecoder(resp.Body).Decode(result); err != nil {
 			return nil, fmt.Errorf("status: %d, unable to decode response, unknown format: %v", resp.StatusCode, err)
 		}
 		// Decode the data field
 		if result.Data == nil {
 			return nil, fmt.Errorf("status: %d, missing data from response", resp.StatusCode)
 		}
-		if err := json.Unmarshal(result.Data, v); err != nil {
+		if err = json.Unmarshal(result.Data, v); err != nil {
 			return result, fmt.Errorf("status: %d, unable to parse response data: %s", resp.StatusCode, err)
 		}
 		fixZeroDate(v)
@@ -233,7 +201,7 @@ func (c *Client) Do(req *http.Request, v interface{}) (*Response, error) {
 
 // Creates and validates a new request
 // sets required headers
-func (c *Client) NewRequest(method, path string, opt interface{}, options []RequestOptionFunc) (*http.Request, error) {
+func (c *Client) NewRequest(method, path string, opt any, options []RequestOptionFunc) (*http.Request, error) {
 	u := *c.baseURL
 	u.Path = c.baseURL.Path + path
 
@@ -268,12 +236,12 @@ func (c *Client) NewRequest(method, path string, opt interface{}, options []Requ
 		return nil, err
 	}
 
-	// Set request option funcs
+	// Set request options
 	for _, fn := range options {
 		if fn == nil {
 			continue
 		}
-		if err := fn(req); err != nil {
+		if err = fn(req); err != nil {
 			return nil, err
 		}
 	}
@@ -289,7 +257,7 @@ func (c *Client) NewRequest(method, path string, opt interface{}, options []Requ
 // Checks the API response for errors
 func CheckResponse(r *http.Response) error {
 	switch r.StatusCode {
-	case 200, 201, 202, 204, 304:
+	case http.StatusOK, http.StatusCreated, http.StatusAccepted, http.StatusNoContent, http.StatusNotModified:
 		return nil
 	}
 
@@ -308,7 +276,7 @@ func CheckResponse(r *http.Response) error {
 }
 
 // Parse value, find zero *PnTime and set it to nil to avoid misleading
-func fixZeroDate(value interface{}) {
+func fixZeroDate(value any) {
 	v := reflect.ValueOf(value)
 
 	if v.Kind() == reflect.Ptr {
